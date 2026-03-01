@@ -1,0 +1,6 @@
+node_modules
+.env
+whiteboard/node_modules
+server/node_modules
+whiteboard/build
+whiteboard/dist
