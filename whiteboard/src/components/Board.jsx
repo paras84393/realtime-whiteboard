@@ -22,6 +22,16 @@ export default function Board() {
   const [drawing, setDrawing] = useState(null);
   const stageRef = useRef();
 
+  // ===== CURSOR CHANGE (UX IMPROVEMENT) =====
+  useEffect(() => {
+    const container = stageRef.current?.container();
+    if (!container) return;
+
+    if (tool === "eraser") container.style.cursor = "crosshair";
+    else if (tool === "pencil") container.style.cursor = "crosshair";
+    else container.style.cursor = "default";
+  }, [tool]);
+
   // ===== JOIN ROOM =====
   useEffect(() => {
     socket.emit("join-room", roomId);
@@ -31,18 +41,14 @@ export default function Board() {
   useEffect(() => {
 
     socket.on("draw", (el) => addElement(el));
-
     socket.on("erase", (id) => removeById(id));
-
     socket.on("undo", (id) => removeById(id));
-
     socket.on("redo", (el) => addElement(el));
 
     socket.on("cursor", (data) =>
       updateCursor(data.id, { x: data.x, y: data.y })
     );
 
-    // LOAD BOARD (IMPORTANT FIX)
     socket.on("load-board", (els) => {
       useBoardStore.setState({ elements: els });
     });
@@ -110,17 +116,7 @@ export default function Board() {
     const stage = e.target.getStage();
     const pos = stage.getPointerPosition();
 
-    // ERASER
-    if (tool === "eraser") {
-      const clicked = stage.getIntersection(pos);
-      if (clicked && clicked.attrs.id) {
-        const id = clicked.attrs.id;
-        removeById(id);
-        socket.emit("erase", { roomId: roomId, id: id });
-      }
-      return;
-    }
-
+    // pencil
     if (tool === "pencil") {
       setDrawing({ type: "line", points: [pos.x, pos.y] });
     }
@@ -136,11 +132,23 @@ export default function Board() {
 
   // ===== MOUSE MOVE =====
   const handleMouseMove = (e) => {
+    
     const stage = e.target.getStage();
     const pos = stage.getPointerPosition();
 
-    // CURSOR BROADCAST FIX
+    // live cursor
     socket.emit("cursor", { roomId: roomId, x: pos.x, y: pos.y });
+
+    // 🔴 RUBBER ERASER (DRAG BASED)
+    if (tool === "eraser") {
+      const shape = stage.getIntersection(pos);
+      if (shape && shape.attrs.id) {
+        const id = shape.attrs.id;
+        removeById(id);
+        socket.emit("erase", { roomId: roomId, id: id });
+      }
+      return;
+    }
 
     if (!drawing) return;
 
@@ -171,10 +179,8 @@ export default function Board() {
     if (!drawing) return;
 
     const el = { ...drawing, id: nanoid() };
-
     addElement(el);
 
-    // DRAW BROADCAST FIX (MOST IMPORTANT)
     socket.emit("draw", {
       roomId: roomId,
       element: el
@@ -197,19 +203,20 @@ export default function Board() {
   return (
     <>
       <Toolbar />
-<Stage
-  ref={stageRef}
-  width={window.innerWidth}
-  height={window.innerHeight}
-  onWheel={handleWheel}
-  onMouseDown={handleMouseDown}
-  onMouseMove={handleMouseMove}
-  onMouseUp={handleMouseUp}
-  onTouchStart={handleMouseDown}
-  onTouchMove={handleMouseMove}
-  onTouchEnd={handleMouseUp}
-  style={{ background: "#fafafa" }}
->
+
+      <Stage
+        ref={stageRef}
+        width={window.innerWidth}
+        height={window.innerHeight}
+        onWheel={handleWheel}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onTouchStart={handleMouseDown}
+        onTouchMove={handleMouseMove}
+        onTouchEnd={handleMouseUp}
+        style={{ background: "#fafafa" }}
+      >
         <Layer>
 
           {grid}
@@ -217,14 +224,44 @@ export default function Board() {
           {elements.map((el) => {
             if (el.type === "line")
               return (
-                <Line key={el.id} id={el.id} points={el.points} stroke="black" strokeWidth={2} lineCap="round" lineJoin="round" />
+                <Line
+                  key={el.id}
+                  id={el.id}
+                  points={el.points}
+                  stroke="black"
+                  strokeWidth={2}
+                  lineCap="round"
+                  lineJoin="round"
+                  hitStrokeWidth={20}
+                />
               );
 
             if (el.type === "rect")
-              return <Rect key={el.id} id={el.id} x={el.x} y={el.y} width={el.width} height={el.height} stroke="black" />;
+              return (
+                <Rect
+                  key={el.id}
+                  id={el.id}
+                  x={el.x}
+                  y={el.y}
+                  width={el.width}
+                  height={el.height}
+                  stroke="black"
+                  hitStrokeWidth={20}
+                />
+              );
 
             if (el.type === "circle")
-              return <Circle key={el.id} id={el.id} x={el.x} y={el.y} radius={el.radius} stroke="black" />;
+              return (
+                <Circle
+                  key={el.id}
+                  id={el.id}
+                  x={el.x}
+                  y={el.y}
+                  radius={el.radius}
+                  stroke="black"
+                  hitStrokeWidth={20}
+                />
+              );
 
             return null;
           })}
