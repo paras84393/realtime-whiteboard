@@ -1,167 +1,238 @@
-import { useEffect, useRef, useState } from "react";
+import { Stage, Layer, Line, Rect, Circle } from "react-konva";
+import { useState, useEffect, useRef } from "react";
+import { useBoardStore } from "../store/useBoardStore";
+import Toolbar from "./Toolbar";
 import { socket } from "../socket";
+import { nanoid } from "nanoid";
+import { useParams } from "react-router-dom";
 
 export default function Board() {
+  const { roomId } = useParams();
 
-  const canvasRef = useRef(null);
-  const ctxRef = useRef(null);
+  const tool = useBoardStore((s) => s.tool);
+  const elements = useBoardStore((s) => s.elements);
+  const addElement = useBoardStore((s) => s.addElement);
+  const removeById = useBoardStore((s) => s.removeById);
+  const updateCursor = useBoardStore((s) => s.updateCursor);
+  const cursors = useBoardStore((s) => s.cursors);
 
-  const [drawing, setDrawing] = useState(false);
-  const [roomId, setRoomId] = useState("");
-  const [elements, setElements] = useState([]);
+  const undo = useBoardStore((s) => s.undo);
+  const redo = useBoardStore((s) => s.redo);
+
+  const [drawing, setDrawing] = useState(null);
+  const stageRef = useRef();
 
   // ===== JOIN ROOM =====
-  const joinRoom = () => {
-    const id = prompt("Enter Room ID");
-    if (!id) return;
-
-    setRoomId(id);
-    socket.emit("join-room", id);
-  };
-
   useEffect(() => {
-    joinRoom();
-  }, []);
+    socket.emit("join-room", roomId);
+  }, [roomId]);
 
-  // ===== CANVAS SETUP =====
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
-
-    const ctx = canvas.getContext("2d");
-    ctx.lineCap = "round";
-    ctx.strokeStyle = "black";
-    ctx.lineWidth = 2;
-
-    ctxRef.current = ctx;
-  }, []);
-
-  // ===== LOAD BOARD FROM DB =====
+  // ===== SOCKET EVENTS =====
   useEffect(() => {
 
-    socket.on("load-board", (serverElements) => {
-      setElements(serverElements);
-      redraw(serverElements);
-    });
+    socket.on("draw", (el) => addElement(el));
 
-    socket.on("draw", (element) => {
-      drawElement(element);
-      setElements(prev => [...prev, element]);
-    });
+    socket.on("erase", (id) => removeById(id));
 
-    socket.on("erase", (id) => {
-      const updated = elements.filter(el => el.id !== id);
-      setElements(updated);
-      redraw(updated);
-    });
+    socket.on("undo", (id) => removeById(id));
 
-    socket.on("undo", (id) => {
-      const updated = elements.filter(el => el.id !== id);
-      setElements(updated);
-      redraw(updated);
-    });
+    socket.on("redo", (el) => addElement(el));
 
-    socket.on("redo", (element) => {
-      drawElement(element);
-      setElements(prev => [...prev, element]);
+    socket.on("cursor", (data) =>
+      updateCursor(data.id, { x: data.x, y: data.y })
+    );
+
+    // LOAD BOARD (IMPORTANT FIX)
+    socket.on("load-board", (els) => {
+      useBoardStore.setState({ elements: els });
     });
 
     return () => {
-      socket.off("load-board");
       socket.off("draw");
       socket.off("erase");
       socket.off("undo");
       socket.off("redo");
+      socket.off("cursor");
+      socket.off("load-board");
+    };
+  }, []);
+
+  // ===== UNDO / REDO KEYS =====
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.ctrlKey && e.key === "z") {
+        const removed = undo();
+        if (removed)
+          socket.emit("undo", { roomId: roomId, id: removed.id });
+      }
+
+      if (e.ctrlKey && e.key === "y") {
+        const restored = redo();
+        if (restored)
+          socket.emit("redo", { roomId: roomId, element: restored });
+      }
     };
 
-  }, [elements]);
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
 
+  // ===== ZOOM =====
+  const handleWheel = (e) => {
+    e.evt.preventDefault();
+    const stage = stageRef.current;
+    const scaleBy = 1.05;
 
-  // ===== DRAW HELPERS =====
+    const oldScale = stage.scaleX();
+    const pointer = stage.getPointerPosition();
 
-  const getCoordinates = (e) => {
-    const rect = canvasRef.current.getBoundingClientRect();
+    const mousePointTo = {
+      x: (pointer.x - stage.x()) / oldScale,
+      y: (pointer.y - stage.y()) / oldScale,
+    };
 
-    if (e.touches) {
-      return {
-        x: e.touches[0].clientX - rect.left,
-        y: e.touches[0].clientY - rect.top,
-      };
+    const newScale =
+      e.evt.deltaY > 0 ? oldScale / scaleBy : oldScale * scaleBy;
+
+    stage.scale({ x: newScale, y: newScale });
+
+    const newPos = {
+      x: pointer.x - mousePointTo.x * newScale,
+      y: pointer.y - mousePointTo.y * newScale,
+    };
+
+    stage.position(newPos);
+    stage.batchDraw();
+  };
+
+  // ===== MOUSE DOWN =====
+  const handleMouseDown = (e) => {
+    const stage = e.target.getStage();
+    const pos = stage.getPointerPosition();
+
+    // ERASER
+    if (tool === "eraser") {
+      const clicked = stage.getIntersection(pos);
+      if (clicked && clicked.attrs.id) {
+        const id = clicked.attrs.id;
+        removeById(id);
+        socket.emit("erase", { roomId: roomId, id: id });
+      }
+      return;
     }
 
-    return {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top,
-    };
+    if (tool === "pencil") {
+      setDrawing({ type: "line", points: [pos.x, pos.y] });
+    }
+
+    if (tool === "rectangle") {
+      setDrawing({ type: "rect", x: pos.x, y: pos.y, width: 0, height: 0 });
+    }
+
+    if (tool === "circle") {
+      setDrawing({ type: "circle", x: pos.x, y: pos.y, radius: 0 });
+    }
   };
 
-  const startDrawing = (e) => {
-    const { x, y } = getCoordinates(e);
+  // ===== MOUSE MOVE =====
+  const handleMouseMove = (e) => {
+    const stage = e.target.getStage();
+    const pos = stage.getPointerPosition();
 
-    ctxRef.current.beginPath();
-    ctxRef.current.moveTo(x, y);
-    setDrawing(true);
-  };
+    // CURSOR BROADCAST FIX
+    socket.emit("cursor", { roomId: roomId, x: pos.x, y: pos.y });
 
-  const finishDrawing = () => {
-    ctxRef.current.closePath();
-    setDrawing(false);
-  };
-
-  const draw = (e) => {
     if (!drawing) return;
-    e.preventDefault();
 
-    const { x, y } = getCoordinates(e);
+    if (drawing.type === "line") {
+      setDrawing({
+        ...drawing,
+        points: drawing.points.concat([pos.x, pos.y]),
+      });
+    }
 
-    ctxRef.current.lineTo(x, y);
-    ctxRef.current.stroke();
+    if (drawing.type === "rect") {
+      setDrawing({
+        ...drawing,
+        width: pos.x - drawing.x,
+        height: pos.y - drawing.y,
+      });
+    }
 
-    const element = {
-      id: Date.now(),
-      x,
-      y,
-    };
+    if (drawing.type === "circle") {
+      const dx = pos.x - drawing.x;
+      const dy = pos.y - drawing.y;
+      setDrawing({ ...drawing, radius: Math.sqrt(dx * dx + dy * dy) });
+    }
+  };
 
-    // SEND TO SERVER
+  // ===== MOUSE UP =====
+  const handleMouseUp = () => {
+    if (!drawing) return;
+
+    const el = { ...drawing, id: nanoid() };
+
+    addElement(el);
+
+    // DRAW BROADCAST FIX (MOST IMPORTANT)
     socket.emit("draw", {
-      roomId,
-      element
+      roomId: roomId,
+      element: el
     });
 
-    setElements(prev => [...prev, element]);
+    setDrawing(null);
   };
 
-  const drawElement = (element) => {
-    ctxRef.current.lineTo(element.x, element.y);
-    ctxRef.current.stroke();
-  };
-
-  const redraw = (elements) => {
-    const canvas = canvasRef.current;
-    const ctx = ctxRef.current;
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.beginPath();
-
-    elements.forEach(el => {
-      ctx.lineTo(el.x, el.y);
-      ctx.stroke();
-    });
-  };
+  // ===== GRID =====
+  const grid = [];
+  for (let i = 0; i < 4000; i += 40) {
+    grid.push(
+      <Line key={"v" + i} points={[i, 0, i, 4000]} stroke="#dcdcdc" strokeWidth={1} />
+    );
+    grid.push(
+      <Line key={"h" + i} points={[0, i, 4000, i]} stroke="#dcdcdc" strokeWidth={1} />
+    );
+  }
 
   return (
-    <canvas
-      ref={canvasRef}
-      style={{ background: "white" }}
-      onMouseDown={startDrawing}
-      onMouseMove={draw}
-      onMouseUp={finishDrawing}
-      onMouseLeave={finishDrawing}
-      onTouchStart={startDrawing}
-      onTouchMove={draw}
-      onTouchEnd={finishDrawing}
-    />
+    <>
+      <Toolbar />
+
+      <Stage
+        ref={stageRef}
+        width={window.innerWidth}
+        height={window.innerHeight}
+        onWheel={handleWheel}
+        onMouseDown={handleMouseDown}
+        onMousemove={handleMouseMove}
+        onMouseup={handleMouseUp}
+        style={{ background: "#fafafa" }}
+      >
+        <Layer>
+
+          {grid}
+
+          {elements.map((el) => {
+            if (el.type === "line")
+              return (
+                <Line key={el.id} id={el.id} points={el.points} stroke="black" strokeWidth={2} lineCap="round" lineJoin="round" />
+              );
+
+            if (el.type === "rect")
+              return <Rect key={el.id} id={el.id} x={el.x} y={el.y} width={el.width} height={el.height} stroke="black" />;
+
+            if (el.type === "circle")
+              return <Circle key={el.id} id={el.id} x={el.x} y={el.y} radius={el.radius} stroke="black" />;
+
+            return null;
+          })}
+
+          {Object.entries(cursors).map(([id, pos]) => (
+            <Circle key={id} x={pos.x} y={pos.y} radius={4} fill="red" />
+          ))}
+
+        </Layer>
+      </Stage>
+    </>
   );
 }
