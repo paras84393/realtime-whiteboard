@@ -197,17 +197,19 @@ export default function Board() {
   return (
     <>
       <Toolbar />
-
-      <Stage
-        ref={stageRef}
-        width={window.innerWidth}
-        height={window.innerHeight}
-        onWheel={handleWheel}
-        onMouseDown={handleMouseDown}
-        onMousemove={handleMouseMove}
-        onMouseup={handleMouseUp}
-        style={{ background: "#fafafa" }}
-      >
+<Stage
+  ref={stageRef}
+  width={window.innerWidth}
+  height={window.innerHeight}
+  onWheel={handleWheel}
+  onMouseDown={handleMouseDown}
+  onMouseMove={handleMouseMove}
+  onMouseUp={handleMouseUp}
+  onTouchStart={handleMouseDown}
+  onTouchMove={handleMouseMove}
+  onTouchEnd={handleMouseUp}
+  style={{ background: "#fafafa" }}
+>
         <Layer>
 
           {grid}
